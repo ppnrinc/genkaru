@@ -828,6 +828,26 @@ tbody td {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Quote item rows ──────────────────────────────────────────────────────── */
+.quote-item-row {
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.quote-item-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 600px) {
+  .quote-item-grid { grid-template-columns: 1fr; }
+}
+
 /* ── Bottom navigation (mobile) ───────────────────────────────────────────── */
 .bottom-nav {
   display: none;

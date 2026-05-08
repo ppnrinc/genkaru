@@ -6,6 +6,7 @@ requireLogin();
 $user   = currentUser();
 $db     = getDb();
 $userId = $user['id'];
+$settings = getUserSettings($db, $userId);
 
 // ── CRUD ────────────────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -26,6 +27,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $hourlyRate = (float)($_POST['hourly_rate'] ?? 0);
     $notes      = trim($_POST['notes'] ?? '');
 
+    $markupRateRaw = trim($_POST['markup_rate'] ?? '');
+    $markupRate    = $markupRateRaw !== '' ? (float)$markupRateRaw : null;
+    $markupTypeRaw = $_POST['markup_type'] ?? '';
+    $markupType    = in_array($markupTypeRaw, ['over_cost','multiplier','margin']) ? $markupTypeRaw : null;
+
     if ($name === '') {
         flashSet('error', '作品名を入力してください。');
         header('Location: ' . APP_URL . '/products.php');
@@ -36,17 +42,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $chk = $db->prepare('SELECT id FROM products WHERE id=? AND user_id=?');
         $chk->execute([$id, $userId]);
         if ($chk->fetch()) {
-            $db->prepare('UPDATE products SET name=?,labor_time=?,hourly_rate=?,notes=?,updated_at=NOW() WHERE id=?')
-               ->execute([$name,$laborTime,$hourlyRate,$notes,$id]);
-
-            // Replace materials
+            $db->prepare('UPDATE products SET name=?,labor_time=?,hourly_rate=?,markup_rate=?,markup_type=?,notes=?,updated_at=NOW() WHERE id=?')
+               ->execute([$name,$laborTime,$hourlyRate,$markupRate,$markupType,$notes,$id]);
             $db->prepare('DELETE FROM product_materials WHERE product_id=?')->execute([$id]);
             saveProductMaterials($db, $id, $_POST);
             flashSet('success', '作品を更新しました。');
         }
     } else {
-        $db->prepare('INSERT INTO products (user_id,name,labor_time,hourly_rate,notes) VALUES (?,?,?,?,?)')
-           ->execute([$userId,$name,$laborTime,$hourlyRate,$notes]);
+        $db->prepare('INSERT INTO products (user_id,name,labor_time,hourly_rate,markup_rate,markup_type,notes) VALUES (?,?,?,?,?,?,?)')
+           ->execute([$userId,$name,$laborTime,$hourlyRate,$markupRate,$markupType,$notes]);
         $newId = (int)$db->lastInsertId();
         saveProductMaterials($db, $newId, $_POST);
         flashSet('success', '作品を登録しました。');
@@ -57,8 +61,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 function saveProductMaterials(PDO $db, int $productId, array $post): void {
-    $matIds   = $post['mat_id']  ?? [];
-    $matQtys  = $post['mat_qty'] ?? [];
+    $matIds  = $post['mat_id']  ?? [];
+    $matQtys = $post['mat_qty'] ?? [];
     foreach ($matIds as $i => $matId) {
         $qty = (float)($matQtys[$i] ?? 0);
         if ((int)$matId > 0 && $qty > 0) {
@@ -68,17 +72,15 @@ function saveProductMaterials(PDO $db, int $productId, array $post): void {
     }
 }
 
-// ── Load products ────────────────────────────────────────────────────────────
+// ── Load ─────────────────────────────────────────────────────────────────────
 $stmt = $db->prepare('SELECT * FROM products WHERE user_id = ? ORDER BY name ASC');
 $stmt->execute([$userId]);
 $products = $stmt->fetchAll();
 
-// Load materials list for form
 $matStmt = $db->prepare('SELECT id, name, unit, purchase_price, total_quantity FROM materials WHERE user_id = ? ORDER BY name');
 $matStmt->execute([$userId]);
 $allMaterials = $matStmt->fetchAll();
 
-// Edit target?
 $editId      = (int)($_GET['edit'] ?? 0);
 $editProduct = null;
 $editPmRows  = [];
@@ -97,11 +99,19 @@ $pageTitle    = '作品管理';
 $current      = 'products';
 $headerAction = '<button class="btn btn-primary btn-sm" onclick="openModal(\'addModal\')">＋ 作品を追加</button>';
 
-// Precompute material JSON for JS cost calculation
-$matsJson = json_encode(array_column($allMaterials, null, 'id'));
+$matsJson = json_encode(array_values($allMaterials));
+
+$defaultMarkupRate = (float)$settings['default_markup_rate'];
+$defaultMarkupType = $settings['default_markup_type'];
 
 include __DIR__ . '/includes/header.php';
 ?>
+
+<?php if ((float)$settings['default_markup_rate'] === 0.0): ?>
+<div class="flash flash-warning">
+  ⚠️ <a href="<?= APP_URL ?>/settings.php">設定</a>でデフォルトの利益率を設定しておくと便利です。
+</div>
+<?php endif; ?>
 
 <div class="card">
   <div class="card-title">🎨 登録作品一覧</div>
@@ -117,19 +127,23 @@ include __DIR__ . '/includes/header.php';
           <tr>
             <th>作品名</th>
             <th class="num">材料費</th>
-            <th class="num">制作時間</th>
             <th class="num">人件費</th>
             <th class="num">総原価</th>
-            <th class="num">推奨価格 ×2</th>
+            <th>利益設定</th>
+            <th class="num">推奨販売価格</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
           <?php foreach ($products as $p):
             $matCost   = getProductCost($db, (int)$p['id']);
-            $laborCost = ($p['labor_time'] / 60) * $p['hourly_rate'];
+            $hr        = effectiveHourlyRate($p, $settings);
+            $laborCost = ($p['labor_time'] / 60) * $hr;
             $totalCost = $matCost + $laborCost;
-            $recPrice  = $totalCost * 2;
+            $mRate     = effectiveMarkupRate($p, $settings);
+            $mType     = effectiveMarkupType($p, $settings);
+            $recPrice  = calcSellingPrice($totalCost, $mRate, $mType);
+            $isCustom  = $p['markup_rate'] !== null;
           ?>
           <tr>
             <td>
@@ -139,12 +153,20 @@ include __DIR__ . '/includes/header.php';
               <?php endif; ?>
             </td>
             <td class="num"><?= formatJpy($matCost) ?></td>
-            <td class="num"><?= $p['labor_time'] ?>分</td>
             <td class="num"><?= formatJpy($laborCost) ?></td>
             <td class="num"><strong><?= formatJpy($totalCost) ?></strong></td>
+            <td>
+              <span class="tag <?= $isCustom ? 'tag-usd' : '' ?>" title="<?= $isCustom ? '作品個別設定' : 'グローバル設定' ?>">
+                <?= e(markupLabel($mType, $mRate)) ?>
+              </span>
+              <?php if ($isCustom): ?>
+                <div style="font-size:0.72rem;color:var(--text-sub);">個別設定</div>
+              <?php endif; ?>
+            </td>
             <td class="num" style="color:var(--pink);font-weight:700;"><?= formatJpy($recPrice) ?></td>
             <td>
               <div class="td-actions">
+                <a href="quotes.php?product_id=<?= $p['id'] ?>" class="btn btn-secondary btn-sm" title="見積書作成">📄</a>
                 <a href="?edit=<?= $p['id'] ?>" class="btn btn-secondary btn-sm">編集</a>
                 <form method="post" onsubmit="return confirmDelete(this)">
                   <input type="hidden" name="csrf_token" value="<?= e(csrfToken()) ?>">
@@ -162,7 +184,7 @@ include __DIR__ . '/includes/header.php';
   <?php endif; ?>
 </div>
 
-<!-- Add Modal -->
+<!-- ── Add Modal ──────────────────────────────────────────────────────────── -->
 <div class="modal-backdrop" id="addModal">
   <div class="modal modal-wide">
     <div class="modal-header">
@@ -182,11 +204,11 @@ include __DIR__ . '/includes/header.php';
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">制作時間（分）</label>
-            <input type="number" name="labor_time" class="form-control calc-trigger" min="0" step="1" value="0" data-form="add">
+            <input type="number" name="labor_time" id="add_labor_time" class="form-control" min="0" step="1" value="0">
           </div>
           <div class="form-group">
-            <label class="form-label">時給（円）</label>
-            <input type="number" name="hourly_rate" class="form-control calc-trigger" min="0" step="10" value="0" data-form="add">
+            <label class="form-label">時給（円）<span style="font-size:0.75rem;color:var(--text-sub);font-weight:400;"> 空欄=デフォルト(<?= formatJpy((float)$settings['default_hourly_rate']) ?>)</span></label>
+            <input type="number" name="hourly_rate" id="add_hourly_rate" class="form-control" min="0" step="10" value="" placeholder="<?= (int)$settings['default_hourly_rate'] ?>">
           </div>
         </div>
 
@@ -200,13 +222,38 @@ include __DIR__ . '/includes/header.php';
         <?php endif; ?>
         <div id="addMatRows"></div>
 
-        <div class="cost-summary" id="addCostSummary" style="display:none;">
+        <div class="cost-summary" id="addCostSummary" style="display:none;margin-top:16px;">
           <table>
             <tbody>
               <tr><td>材料費合計</td><td class="num" id="addMatCost">¥0</td></tr>
               <tr><td>人件費</td><td class="num" id="addLaborCost">¥0</td></tr>
               <tr class="total-row"><td><strong>総原価</strong></td><td class="num" id="addTotalCost"><strong>¥0</strong></td></tr>
-              <tr><td>推奨販売価格（×2）</td><td class="num" id="addRecPrice" style="color:var(--pink);font-weight:700;">¥0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <hr class="divider">
+        <div class="card-title" style="font-size:0.9rem;margin-bottom:12px;">💰 利益設定</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">計算方法</label>
+            <select name="markup_type" id="add_markup_type" class="form-control" onchange="recalcAll('add')">
+              <option value="">グローバル設定を使用（<?= e(markupTypeLabel($settings['default_markup_type'])) ?>）</option>
+              <option value="over_cost">上乗せ率（%）</option>
+              <option value="multiplier">掛け率（×倍）</option>
+              <option value="margin">利益率（%）</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">値 <span style="font-size:0.75rem;color:var(--text-sub);font-weight:400;">空欄=グローバル設定(<?= e(markupLabel($settings['default_markup_type'], (float)$settings['default_markup_rate'])) ?>)</span></label>
+            <input type="number" name="markup_rate" id="add_markup_rate" class="form-control" min="0" step="0.1" placeholder="空欄=デフォルト" oninput="recalcAll('add')">
+          </div>
+        </div>
+        <div class="cost-summary" id="addPriceSummary" style="display:none;">
+          <table>
+            <tbody>
+              <tr><td>適用利益設定</td><td class="num" id="addMarkupLabel" style="color:var(--text-sub);"></td></tr>
+              <tr class="total-row"><td><strong>推奨販売価格</strong></td><td class="num" id="addRecPrice" style="color:var(--pink);font-weight:700;"><strong>¥0</strong></td></tr>
             </tbody>
           </table>
         </div>
@@ -224,7 +271,7 @@ include __DIR__ . '/includes/header.php';
   </div>
 </div>
 
-<!-- Edit Modal -->
+<!-- ── Edit Modal ─────────────────────────────────────────────────────────── -->
 <?php if ($editProduct): ?>
 <div class="modal-backdrop open" id="editModal">
   <div class="modal modal-wide">
@@ -246,11 +293,11 @@ include __DIR__ . '/includes/header.php';
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">制作時間（分）</label>
-            <input type="number" name="labor_time" class="form-control calc-trigger" min="0" step="1" value="<?= (int)$editProduct['labor_time'] ?>" data-form="edit">
+            <input type="number" name="labor_time" id="edit_labor_time" class="form-control" min="0" step="1" value="<?= (int)$editProduct['labor_time'] ?>">
           </div>
           <div class="form-group">
             <label class="form-label">時給（円）</label>
-            <input type="number" name="hourly_rate" class="form-control calc-trigger" min="0" step="10" value="<?= (int)$editProduct['hourly_rate'] ?>" data-form="edit">
+            <input type="number" name="hourly_rate" id="edit_hourly_rate" class="form-control" min="0" step="10" value="<?= (float)$editProduct['hourly_rate'] ?: '' ?>" placeholder="<?= (int)$settings['default_hourly_rate'] ?>">
           </div>
         </div>
 
@@ -273,13 +320,40 @@ include __DIR__ . '/includes/header.php';
           <?php endforeach; ?>
         </div>
 
-        <div class="cost-summary" id="editCostSummary">
+        <div class="cost-summary" id="editCostSummary" style="margin-top:16px;">
           <table>
             <tbody>
               <tr><td>材料費合計</td><td class="num" id="editMatCost">¥0</td></tr>
               <tr><td>人件費</td><td class="num" id="editLaborCost">¥0</td></tr>
               <tr class="total-row"><td><strong>総原価</strong></td><td class="num" id="editTotalCost"><strong>¥0</strong></td></tr>
-              <tr><td>推奨販売価格（×2）</td><td class="num" id="editRecPrice" style="color:var(--pink);font-weight:700;">¥0</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <hr class="divider">
+        <div class="card-title" style="font-size:0.9rem;margin-bottom:12px;">💰 利益設定</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">計算方法</label>
+            <select name="markup_type" id="edit_markup_type" class="form-control" onchange="recalcAll('edit')">
+              <option value="" <?= $editProduct['markup_type']===null?'selected':'' ?>>グローバル設定を使用</option>
+              <option value="over_cost"  <?= $editProduct['markup_type']==='over_cost' ?'selected':'' ?>>上乗せ率（%）</option>
+              <option value="multiplier" <?= $editProduct['markup_type']==='multiplier'?'selected':'' ?>>掛け率（×倍）</option>
+              <option value="margin"     <?= $editProduct['markup_type']==='margin'    ?'selected':'' ?>>利益率（%）</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">値</label>
+            <input type="number" name="markup_rate" id="edit_markup_rate" class="form-control" min="0" step="0.1"
+                   value="<?= $editProduct['markup_rate'] !== null ? $editProduct['markup_rate'] : '' ?>"
+                   placeholder="空欄=デフォルト" oninput="recalcAll('edit')">
+          </div>
+        </div>
+        <div class="cost-summary" id="editPriceSummary">
+          <table>
+            <tbody>
+              <tr><td>適用利益設定</td><td class="num" id="editMarkupLabel" style="color:var(--text-sub);"></td></tr>
+              <tr class="total-row"><td><strong>推奨販売価格</strong></td><td class="num" id="editRecPrice" style="color:var(--pink);font-weight:700;"><strong>¥0</strong></td></tr>
             </tbody>
           </table>
         </div>
@@ -299,10 +373,17 @@ include __DIR__ . '/includes/header.php';
 <?php endif; ?>
 
 <?php
-$matsJsonEscaped = json_encode($allMaterials);
+$matsJsonEscaped   = json_encode($allMaterials);
+$defMarkupRate     = json_encode($defaultMarkupRate);
+$defMarkupType     = json_encode($defaultMarkupType);
+$defHourlyRate     = json_encode((float)$settings['default_hourly_rate']);
+
 $pageScript = <<<JSCODE
-const MATS = {};
+const MATS           = {};
 {$matsJsonEscaped}.forEach(m => { MATS[m.id] = m; });
+const DEF_MARKUP_RATE = {$defMarkupRate};
+const DEF_MARKUP_TYPE = {$defMarkupType};
+const DEF_HOURLY_RATE = {$defHourlyRate};
 
 function matOptionsHtml(selectedId) {
   return Object.values(MATS).map(m =>
@@ -324,40 +405,65 @@ function addMaterialRow(containerId, formKey) {
   recalcCost(formKey);
 }
 
-function recalcCost(formKey) {
-  const rows = document.querySelectorAll(`#\${formKey}MatRows .material-row`);
+function recalcCost(fk) {
+  const rows = document.querySelectorAll(`#\${fk}MatRows .material-row`);
   let matCost = 0;
   rows.forEach(row => {
     const matId = row.querySelector('.mat-select')?.value;
     const qty   = parseFloat(row.querySelector('.mat-qty')?.value) || 0;
     const mat   = MATS[matId];
-    if (mat && mat.total_quantity > 0) {
-      matCost += (mat.purchase_price / mat.total_quantity) * qty;
-    }
+    if (mat && mat.total_quantity > 0) matCost += (mat.purchase_price / mat.total_quantity) * qty;
   });
 
-  const form = document.getElementById(formKey + 'Form') || document.querySelector(`[data-form="\${formKey}"]`)?.closest('form');
-  const ltInput = form?.querySelector('[name="labor_time"]');
-  const hrInput = form?.querySelector('[name="hourly_rate"]');
-  const laborCost  = ((parseFloat(ltInput?.value) || 0) / 60) * (parseFloat(hrInput?.value) || 0);
-  const totalCost  = matCost + laborCost;
-  const recPrice   = totalCost * 2;
+  const lt  = parseFloat(document.getElementById(fk + '_labor_time')?.value) || 0;
+  const hr  = parseFloat(document.getElementById(fk + '_hourly_rate')?.value) || DEF_HOURLY_RATE;
+  const laborCost = (lt / 60) * hr;
+  const totalCost = matCost + laborCost;
 
-  const summary = document.getElementById(formKey + 'CostSummary');
-  if (summary) {
-    summary.style.display = 'block';
-    document.getElementById(formKey + 'MatCost').textContent   = fmtJpy(matCost);
-    document.getElementById(formKey + 'LaborCost').textContent = fmtJpy(laborCost);
-    document.getElementById(formKey + 'TotalCost').innerHTML   = '<strong>' + fmtJpy(totalCost) + '</strong>';
-    document.getElementById(formKey + 'RecPrice').textContent  = fmtJpy(recPrice);
+  const cs = document.getElementById(fk + 'CostSummary');
+  if (cs) {
+    cs.style.display = 'block';
+    document.getElementById(fk + 'MatCost').textContent   = fmtJpy(matCost);
+    document.getElementById(fk + 'LaborCost').textContent = fmtJpy(laborCost);
+    document.getElementById(fk + 'TotalCost').innerHTML   = '<strong>' + fmtJpy(totalCost) + '</strong>';
+  }
+
+  recalcPrice(fk, totalCost);
+}
+
+function recalcPrice(fk, totalCost) {
+  const typeEl = document.getElementById(fk + '_markup_type');
+  const rateEl = document.getElementById(fk + '_markup_rate');
+  if (!typeEl) return;
+
+  const type  = typeEl.value || DEF_MARKUP_TYPE;
+  const rate  = rateEl.value !== '' ? parseFloat(rateEl.value) : DEF_MARKUP_RATE;
+
+  let recPrice = 0;
+  if (type === 'multiplier') recPrice = totalCost * rate;
+  else if (type === 'margin') recPrice = rate >= 100 ? 0 : totalCost / (1 - rate / 100);
+  else recPrice = totalCost * (1 + rate / 100);
+
+  const typeNames = { over_cost: `＋\${rate}%上乗せ`, multiplier: `×\${rate}倍`, margin: `利益率 \${rate}%` };
+  const label = typeEl.value === '' ? `グローバル設定（\${typeNames[DEF_MARKUP_TYPE].replace(String(rate), String(DEF_MARKUP_RATE))}）` : typeNames[type];
+
+  const ps = document.getElementById(fk + 'PriceSummary');
+  if (ps) {
+    ps.style.display = 'block';
+    document.getElementById(fk + 'MarkupLabel').textContent = label;
+    document.getElementById(fk + 'RecPrice').innerHTML = '<strong>' + fmtJpy(recPrice) + '</strong>';
   }
 }
 
-document.querySelectorAll('.calc-trigger').forEach(el => {
-  el.addEventListener('input', () => recalcCost(el.dataset.form));
+function recalcAll(fk) { recalcCost(fk); }
+
+// Bind labor/hourly rate changes
+['add','edit'].forEach(fk => {
+  document.getElementById(fk + '_labor_time')?.addEventListener('input', () => recalcAll(fk));
+  document.getElementById(fk + '_hourly_rate')?.addEventListener('input', () => recalcAll(fk));
 });
 
-// Init edit form cost if any rows
+// Init edit form
 recalcCost('edit');
 JSCODE;
 

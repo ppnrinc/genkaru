@@ -9,8 +9,10 @@ $navItems = [
     'dashboard' => ['label' => 'ダッシュボード', 'icon' => '🏠', 'href' => '/dashboard.php'],
     'materials' => ['label' => '材料管理',       'icon' => '🧵', 'href' => '/materials.php'],
     'products'  => ['label' => '作品管理',       'icon' => '🎨', 'href' => '/products.php'],
+    'quotes'    => ['label' => '見積書',         'icon' => '📄', 'href' => '/quotes.php'],
     'events'    => ['label' => 'イベント管理',   'icon' => '📅', 'href' => '/events.php'],
     'reports'   => ['label' => 'レポート',       'icon' => '📊', 'href' => '/reports.php'],
+    'settings'  => ['label' => '設定',           'icon' => '⚙️',  'href' => '/settings.php'],
 ];
 
 $current  = $current  ?? 'dashboard';
@@ -81,11 +83,11 @@ $pageTitle = $pageTitle ?? 'げんかる！';
     <div class="bottom-nav-inner">
       <?php
       $bottomNav = [
-          'dashboard' => ['label' => 'ホーム',    'icon' => '🏠', 'href' => '/dashboard.php'],
-          'materials' => ['label' => '材料',      'icon' => '🧵', 'href' => '/materials.php'],
-          'products'  => ['label' => '作品',      'icon' => '🎨', 'href' => '/products.php'],
-          'events'    => ['label' => 'イベント',  'icon' => '📅', 'href' => '/events.php'],
-          'reports'   => ['label' => 'レポート',  'icon' => '📊', 'href' => '/reports.php'],
+          'dashboard' => ['label' => 'ホーム',   'icon' => '🏠', 'href' => '/dashboard.php'],
+          'materials' => ['label' => '材料',     'icon' => '🧵', 'href' => '/materials.php'],
+          'products'  => ['label' => '作品',     'icon' => '🎨', 'href' => '/products.php'],
+          'quotes'    => ['label' => '見積書',   'icon' => '📄', 'href' => '/quotes.php'],
+          'events'    => ['label' => 'イベント', 'icon' => '📅', 'href' => '/events.php'],
       ];
       foreach ($bottomNav as $key => $item):
       ?>

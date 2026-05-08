@@ -124,3 +124,118 @@ function verifyCsrf(): void {
         exit('不正なリクエストです。');
     }
 }
+
+// ── Markup / Pricing ─────────────────────────────────────────────────────────
+
+function calcSellingPrice(float $cost, float $rate, string $type): float {
+    if ($cost <= 0) return 0.0;
+    return match ($type) {
+        'multiplier' => $cost * $rate,
+        'margin'     => ($rate >= 100) ? 0.0 : $cost / (1 - $rate / 100),
+        default      => $cost * (1 + $rate / 100), // over_cost
+    };
+}
+
+function markupLabel(string $type, float $rate): string {
+    return match ($type) {
+        'multiplier' => '×' . rtrim(rtrim(number_format($rate, 2, '.', ''), '0'), '.') . '倍',
+        'margin'     => '利益率 ' . number_format($rate, 1) . '%',
+        default      => '＋' . number_format($rate, 1) . '%上乗せ',
+    };
+}
+
+function markupTypeLabel(string $type): string {
+    return match ($type) {
+        'multiplier' => '掛け率（×倍）',
+        'margin'     => '利益率（%）',
+        default      => '上乗せ率（%）',
+    };
+}
+
+// ── User settings ─────────────────────────────────────────────────────────────
+
+function getUserSettings(PDO $db, int $userId): array {
+    $stmt = $db->prepare('SELECT * FROM user_settings WHERE user_id = ?');
+    $stmt->execute([$userId]);
+    return $stmt->fetch() ?: [
+        'brand_name'          => '',
+        'default_hourly_rate' => 0.0,
+        'default_markup_rate' => 100.0,
+        'default_markup_type' => 'over_cost',
+        'tax_rate'            => 10.0,
+        'include_tax'         => 0,
+    ];
+}
+
+function saveUserSettings(PDO $db, int $userId, array $d): void {
+    $db->prepare('
+        INSERT INTO user_settings (user_id, brand_name, default_hourly_rate, default_markup_rate, default_markup_type, tax_rate, include_tax)
+        VALUES (?,?,?,?,?,?,?)
+        ON DUPLICATE KEY UPDATE
+            brand_name=VALUES(brand_name),
+            default_hourly_rate=VALUES(default_hourly_rate),
+            default_markup_rate=VALUES(default_markup_rate),
+            default_markup_type=VALUES(default_markup_type),
+            tax_rate=VALUES(tax_rate),
+            include_tax=VALUES(include_tax),
+            updated_at=NOW()
+    ')->execute([
+        $userId,
+        $d['brand_name'],
+        $d['default_hourly_rate'],
+        $d['default_markup_rate'],
+        $d['default_markup_type'],
+        $d['tax_rate'],
+        $d['include_tax'],
+    ]);
+}
+
+function effectiveMarkupRate(array $product, array $settings): float {
+    return $product['markup_rate'] !== null ? (float)$product['markup_rate'] : (float)$settings['default_markup_rate'];
+}
+
+function effectiveMarkupType(array $product, array $settings): string {
+    return $product['markup_type'] !== null ? $product['markup_type'] : $settings['default_markup_type'];
+}
+
+function effectiveHourlyRate(array $product, array $settings): float {
+    $hr = (float)$product['hourly_rate'];
+    return $hr > 0 ? $hr : (float)$settings['default_hourly_rate'];
+}
+
+// ── Quote helpers ─────────────────────────────────────────────────────────────
+
+function generateQuoteNumber(PDO $db, int $userId): string {
+    $stmt = $db->prepare("SELECT COUNT(*) FROM quotes WHERE user_id=? AND DATE(created_at)=CURDATE()");
+    $stmt->execute([$userId]);
+    $seq = (int)$stmt->fetchColumn() + 1;
+    return sprintf('Q-%s-%03d', date('Ymd'), $seq);
+}
+
+function getQuoteTotal(array $items, float $taxRate, bool $includeTax): array {
+    $subtotal = 0.0;
+    foreach ($items as $item) {
+        $subtotal += $item['unit_price'] * $item['quantity'];
+    }
+    $tax   = $subtotal * ($taxRate / 100);
+    $total = $includeTax ? $subtotal : $subtotal + $tax;
+    return ['subtotal' => $subtotal, 'tax' => $tax, 'total' => $total];
+}
+
+function quoteStatusLabel(string $status): string {
+    return match ($status) {
+        'sent'     => '送付済み',
+        'accepted' => '受注',
+        'declined' => '辞退',
+        default    => '下書き',
+    };
+}
+
+function quoteStatusClass(string $status): string {
+    return match ($status) {
+        'sent'     => 'tag-usd',
+        'accepted' => 'tag-jpy',
+        'declined' => 'tag-other',
+        default    => '',
+    };
+}
