@@ -20,7 +20,11 @@ $pageTitle = $pageTitle ?? 'げんかる！';
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#C2185B">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title><?= e($pageTitle) ?> - げんかる！</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;900&display=swap" rel="stylesheet">
@@ -71,6 +75,27 @@ $pageTitle = $pageTitle ?? 'げんかる！';
 
   <!-- Sidebar overlay (mobile) -->
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- Bottom navigation (mobile) -->
+  <nav class="bottom-nav" aria-label="メインナビゲーション">
+    <div class="bottom-nav-inner">
+      <?php
+      $bottomNav = [
+          'dashboard' => ['label' => 'ホーム',    'icon' => '🏠', 'href' => '/dashboard.php'],
+          'materials' => ['label' => '材料',      'icon' => '🧵', 'href' => '/materials.php'],
+          'products'  => ['label' => '作品',      'icon' => '🎨', 'href' => '/products.php'],
+          'events'    => ['label' => 'イベント',  'icon' => '📅', 'href' => '/events.php'],
+          'reports'   => ['label' => 'レポート',  'icon' => '📊', 'href' => '/reports.php'],
+      ];
+      foreach ($bottomNav as $key => $item):
+      ?>
+      <a href="<?= APP_URL . e($item['href']) ?>" class="bottom-nav-item <?= $current === $key ? 'active' : '' ?>" aria-label="<?= e($item['label']) ?>">
+        <span class="bottom-nav-icon"><?= $item['icon'] ?></span>
+        <span><?= e($item['label']) ?></span>
+      </a>
+      <?php endforeach; ?>
+    </div>
+  </nav>
 
   <!-- Main content -->
   <main class="main-content">
